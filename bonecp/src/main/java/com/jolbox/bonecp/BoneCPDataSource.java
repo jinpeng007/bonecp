@@ -295,8 +295,7 @@ public class BoneCPDataSource extends BoneCPConfig implements DataSource, Object
 	 * @return pool
 	 */
 	public BoneCP getPool() {
-		FinalWrapper<BoneCP> wrapper = this.pool;
-		return wrapper == null ? null : wrapper.value;
+		return this.pool == null ? null : this.pool.value;
 	}
 
 	

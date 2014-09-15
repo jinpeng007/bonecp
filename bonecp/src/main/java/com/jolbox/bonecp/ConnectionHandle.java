@@ -178,8 +178,9 @@ public class ConnectionHandle implements Connection,Serializable{
 	/** SQL Failure codes indicating the database is broken/died (and thus kill off remaining connections). 
 	  Anything else will be taken as the *connection* (not the db) being broken. Note: 08S01 is considered as connection failure in MySQL. 
           57P01 means that postgresql was restarted. 
+          HY000 is firebird specific triggered when a connection is broken
 	 */
-	private static final ImmutableSet<String> sqlStateDBFailureCodes = ImmutableSet.of("08001", "08006", "08007", "08S01", "57P01"); 
+	private static final ImmutableSet<String> sqlStateDBFailureCodes = ImmutableSet.of("08001", "08006", "08007", "08S01", "57P01", "HY000"); 
 	/** Keep track of open statements. */
 	protected ConcurrentMap<Statement, String> trackedStatement;
 	/** Avoid creating a new string object each time. */
@@ -421,10 +422,8 @@ public class ConnectionHandle implements Connection,Serializable{
 		//		char firstChar = state.charAt(0);
 		// if it's a communication exception, a mysql deadlock or an implementation-specific error code, flag this connection as being potentially broken.
 		// state == 40001 is mysql specific triggered when a deadlock is detected
-		// state == HY000 is firebird specific triggered when a connection is broken
 		char firstChar = state.charAt(0);
 		if (connectionState.equals(ConnectionState.CONNECTION_POSSIBLY_BROKEN) || state.equals("40001") || 
-				state.equals("HY000") ||
 				state.startsWith("08") ||  (firstChar >= '5' && firstChar <='9') /*|| (firstChar >='I' && firstChar <= 'Z')*/){
 			this.possiblyBroken = true;
 		}
@@ -457,7 +456,7 @@ public class ConnectionHandle implements Connection,Serializable{
 	 */
 	private void checkClosed() throws SQLException {
 		if (this.logicallyClosed.get()) {
-			throw new SQLException("Connection is closed!", "08003");
+			throw new SQLException("Connection is closed!");
 		}
 	}
 
@@ -884,7 +883,7 @@ public class ConnectionHandle implements Connection,Serializable{
 	}
 
 	public CallableStatement prepareCall(String sql) throws SQLException {
-		CallableStatementHandle result = null;
+		StatementHandle result = null;
 		String cacheKey = null;
 
 		checkClosed();
@@ -896,17 +895,14 @@ public class ConnectionHandle implements Connection,Serializable{
 			}
 			if (this.statementCachingEnabled) {
 				cacheKey = sql;
-				result = (CallableStatementHandle) this.callableStatementCache.get(cacheKey);
+				result = this.callableStatementCache.get(cacheKey);
 			}
 
 			if (result == null){
-				result = new CallableStatementHandle(this.connection.prepareCall(sql),
+				result = new CallableStatementHandle(this.connection.prepareCall(sql), 
 						sql, this, cacheKey, this.callableStatementCache);
-			} else {
-				result = new CallableStatementHandle(result.getInternalCallableStatement(),
-						result.sql, this, cacheKey, this.callableStatementCache);
+				result.setLogicallyOpen();
 			}
-			result.setLogicallyOpen();
 
 			if (this.pool.closeConnectionWatch && this.statementCachingEnabled){ // debugging mode enabled?
 				result.setOpenStackTrace(this.pool.captureStackTrace(STATEMENT_NOT_CLOSED));
@@ -923,11 +919,11 @@ public class ConnectionHandle implements Connection,Serializable{
 			throw markPossiblyBroken(e);
 		}
 
-		return result;
+		return (CallableStatement) result;	
 	}
 
 	public CallableStatement prepareCall(String sql, int resultSetType,	int resultSetConcurrency) throws SQLException {
-		CallableStatementHandle result = null;
+		StatementHandle result = null;
 		String cacheKey = null;
 
 		checkClosed();
@@ -939,17 +935,14 @@ public class ConnectionHandle implements Connection,Serializable{
 			}
 			if (this.statementCachingEnabled) {
 				cacheKey = this.callableStatementCache.calculateCacheKey(sql, resultSetType, resultSetConcurrency);
-				result = (CallableStatementHandle) this.callableStatementCache.get(cacheKey);
+				result = this.callableStatementCache.get(cacheKey);
 			}
 
 			if (result == null){
-				result = new CallableStatementHandle(this.connection.prepareCall(sql, resultSetType, resultSetConcurrency),
+				result = new CallableStatementHandle(this.connection.prepareCall(sql, resultSetType, resultSetConcurrency), 
 						sql, this, cacheKey, this.callableStatementCache);
-			} else {
-				result = new CallableStatementHandle(result.getInternalCallableStatement(),
-						result.sql, this, cacheKey, this.callableStatementCache);
+				result.setLogicallyOpen();
 			}
-			result.setLogicallyOpen();
 
 			if (this.pool.closeConnectionWatch && this.statementCachingEnabled){ // debugging mode enabled?
 				result.setOpenStackTrace(this.pool.captureStackTrace(STATEMENT_NOT_CLOSED));
@@ -966,13 +959,13 @@ public class ConnectionHandle implements Connection,Serializable{
 			throw markPossiblyBroken(e);
 		}
 
-		return result;
+		return (CallableStatement) result;	
 	}
 
 	public CallableStatement prepareCall(String sql, int resultSetType,
 			int resultSetConcurrency, int resultSetHoldability) throws SQLException {
 
-		CallableStatementHandle result = null;
+		StatementHandle result = null;
 		String cacheKey = null;
 
 		checkClosed();
@@ -984,17 +977,14 @@ public class ConnectionHandle implements Connection,Serializable{
 			}
 			if (this.statementCachingEnabled) {
 				cacheKey = this.callableStatementCache.calculateCacheKey(sql, resultSetType, resultSetConcurrency, resultSetHoldability);
-				result = (CallableStatementHandle) this.callableStatementCache.get(cacheKey);
+				result = this.callableStatementCache.get(cacheKey);
 			}
 
 			if (result == null){
-				result = new CallableStatementHandle(this.connection.prepareCall(sql, resultSetType, resultSetConcurrency, resultSetHoldability),
+				result = new CallableStatementHandle(this.connection.prepareCall(sql, resultSetType, resultSetConcurrency, resultSetHoldability), 
 						sql, this, cacheKey, this.callableStatementCache);
-			} else {
-				result = new CallableStatementHandle(result.getInternalCallableStatement(),
-						result.sql, this, cacheKey, this.callableStatementCache);
+				result.setLogicallyOpen();
 			}
-			result.setLogicallyOpen();
 
 			if (this.pool.closeConnectionWatch && this.statementCachingEnabled){ // debugging mode enabled?
 				result.setOpenStackTrace(this.pool.captureStackTrace(STATEMENT_NOT_CLOSED));
@@ -1011,14 +1001,14 @@ public class ConnectionHandle implements Connection,Serializable{
 			throw markPossiblyBroken(e);
 		}
 
-		return result;
+		return (CallableStatement) result;	
 	}
 
 	public PreparedStatement prepareStatement(String sql) throws SQLException {
-		PreparedStatementHandle result = null;
+		StatementHandle result = null;
 		String cacheKey = null;
 
-		checkClosed();
+		checkClosed(); 
 
 		try {
 			long statStart=0;
@@ -1027,19 +1017,18 @@ public class ConnectionHandle implements Connection,Serializable{
 			}
 			if (this.statementCachingEnabled) {
 				cacheKey = sql;
-				result = (PreparedStatementHandle) this.preparedStatementCache.get(cacheKey);
+				result = this.preparedStatementCache.get(cacheKey);
 			}
 
 			if (result == null){
 				result =  new PreparedStatementHandle(this.connection.prepareStatement(sql), sql, this, cacheKey, this.preparedStatementCache);
-			} else {
-				result = new PreparedStatementHandle(result.getInternalPreparedStatement(), result.sql, this, cacheKey, this.preparedStatementCache);
+				result.setLogicallyOpen();
 			}
-			result.setLogicallyOpen();
+
 
 			if (this.pool.closeConnectionWatch && this.statementCachingEnabled){ // debugging mode enabled?
 				result.setOpenStackTrace(this.pool.captureStackTrace(STATEMENT_NOT_CLOSED));
-			}
+			} 
 			if (this.closeOpenStatements){
 				this.trackedStatement.put(result, maybeCaptureStackTrace());
 			}
@@ -1052,12 +1041,12 @@ public class ConnectionHandle implements Connection,Serializable{
 		} catch (SQLException e) {
 			throw markPossiblyBroken(e);
 		}
-		return result;
+		return (PreparedStatement) result;
 	}
 
 
 	public PreparedStatement prepareStatement(String sql, int autoGeneratedKeys) throws SQLException {
-		PreparedStatementHandle result = null;
+		StatementHandle result = null;
 		String cacheKey = null;
 
 		checkClosed();
@@ -1069,15 +1058,13 @@ public class ConnectionHandle implements Connection,Serializable{
 			}
 			if (this.statementCachingEnabled) {
 				cacheKey = this.preparedStatementCache.calculateCacheKey(sql, autoGeneratedKeys);
-				result = (PreparedStatementHandle) this.preparedStatementCache.get(cacheKey);
+				result = this.preparedStatementCache.get(cacheKey);
 			}
 
 			if (result == null){
 				result = new PreparedStatementHandle(this.connection.prepareStatement(sql, autoGeneratedKeys), sql, this, cacheKey, this.preparedStatementCache);
-			} else {
-				result = new PreparedStatementHandle(result.getInternalPreparedStatement(), result.sql, this, cacheKey, this.preparedStatementCache);
+				result.setLogicallyOpen();
 			}
-			result.setLogicallyOpen();
 
 			if (this.pool.closeConnectionWatch  && this.statementCachingEnabled){ // debugging mode enabled?
 				result.setOpenStackTrace(this.pool.captureStackTrace(STATEMENT_NOT_CLOSED));
@@ -1095,13 +1082,13 @@ public class ConnectionHandle implements Connection,Serializable{
 		} catch (SQLException e) {
 			throw markPossiblyBroken(e);
 		}
-		return result;
+		return (PreparedStatement) result;
 
 	}
 
 	public PreparedStatement prepareStatement(String sql, int[] columnIndexes)
 			throws SQLException {
-		PreparedStatementHandle result = null;
+		StatementHandle result = null;
 		String cacheKey = null;
 
 		checkClosed();
@@ -1114,17 +1101,14 @@ public class ConnectionHandle implements Connection,Serializable{
 
 			if (this.statementCachingEnabled) {
 				cacheKey = this.preparedStatementCache.calculateCacheKey(sql, columnIndexes);
-				result = (PreparedStatementHandle) this.preparedStatementCache.get(cacheKey);
+				result = this.preparedStatementCache.get(cacheKey);
 			}
 
 			if (result == null){
-				result = new PreparedStatementHandle(this.connection.prepareStatement(sql, columnIndexes),
+				result = new PreparedStatementHandle(this.connection.prepareStatement(sql, columnIndexes), 
 						sql, this, cacheKey, this.preparedStatementCache);
-			} else {
-				result = new PreparedStatementHandle(result.getInternalPreparedStatement(),
-						result.sql, this, cacheKey, this.preparedStatementCache);
+				result.setLogicallyOpen();
 			}
-			result.setLogicallyOpen();
 
 			if (this.pool.closeConnectionWatch  && this.statementCachingEnabled){ // debugging mode enabled?
 				result.setOpenStackTrace(this.pool.captureStackTrace(STATEMENT_NOT_CLOSED));
@@ -1143,12 +1127,12 @@ public class ConnectionHandle implements Connection,Serializable{
 			throw markPossiblyBroken(e);
 		}
 
-		return result;
+		return (PreparedStatement) result;
 	}
 
 	public PreparedStatement prepareStatement(String sql, String[] columnNames)
 			throws SQLException {
-		PreparedStatementHandle result = null;
+		StatementHandle result = null;
 		String cacheKey = null;
 
 		checkClosed();
@@ -1160,17 +1144,14 @@ public class ConnectionHandle implements Connection,Serializable{
 			}
 			if (this.statementCachingEnabled) {
 				cacheKey = this.preparedStatementCache.calculateCacheKey(sql, columnNames);
-				result = (PreparedStatementHandle) this.preparedStatementCache.get(cacheKey);
+				result = this.preparedStatementCache.get(cacheKey);
 			}
 
 			if (result == null){
-				result = new PreparedStatementHandle(this.connection.prepareStatement(sql, columnNames),
+				result = new PreparedStatementHandle(this.connection.prepareStatement(sql, columnNames), 
 						sql, this, cacheKey, this.preparedStatementCache);
-			} else {
-				result = new PreparedStatementHandle(result.getInternalPreparedStatement(),
-						result.sql, this, cacheKey, this.preparedStatementCache);
+				result.setLogicallyOpen();
 			}
-			result.setLogicallyOpen();
 
 			if (this.pool.closeConnectionWatch && this.statementCachingEnabled){ // debugging mode enabled?
 				result.setOpenStackTrace(this.pool.captureStackTrace(STATEMENT_NOT_CLOSED));
@@ -1188,12 +1169,12 @@ public class ConnectionHandle implements Connection,Serializable{
 			throw markPossiblyBroken(e);
 		}
 
-		return result;
+		return (PreparedStatement) result;
 
 	}
 
 	public PreparedStatement prepareStatement(String sql, int resultSetType,  int resultSetConcurrency) throws SQLException {
-		PreparedStatementHandle result = null;
+		StatementHandle result = null;
 		String cacheKey = null;
 
 		checkClosed();
@@ -1205,17 +1186,14 @@ public class ConnectionHandle implements Connection,Serializable{
 			}
 			if (this.statementCachingEnabled) {
 				cacheKey = this.preparedStatementCache.calculateCacheKey(sql, resultSetType, resultSetConcurrency);
-				result = (PreparedStatementHandle) this.preparedStatementCache.get(cacheKey);
+				result = this.preparedStatementCache.get(cacheKey);
 			}
 
 			if (result == null){
-				result = new PreparedStatementHandle(this.connection.prepareStatement(sql, resultSetType, resultSetConcurrency),
+				result = new PreparedStatementHandle(this.connection.prepareStatement(sql, resultSetType, resultSetConcurrency), 
 						sql, this, cacheKey, this.preparedStatementCache);
-			} else {
-				result = new PreparedStatementHandle(result.getInternalPreparedStatement(),
-						result.sql, this, cacheKey, this.preparedStatementCache);
+				result.setLogicallyOpen();
 			}
-			result.setLogicallyOpen();
 
 			if (this.pool.closeConnectionWatch && this.statementCachingEnabled){ // debugging mode enabled?
 				result.setOpenStackTrace(this.pool.captureStackTrace(STATEMENT_NOT_CLOSED));
@@ -1232,13 +1210,13 @@ public class ConnectionHandle implements Connection,Serializable{
 			throw markPossiblyBroken(e);
 		}
 
-		return result;
+		return (PreparedStatement) result;
 
 	}
 
 	public PreparedStatement prepareStatement(String sql, int resultSetType, int resultSetConcurrency, int resultSetHoldability)
 			throws SQLException {
-		PreparedStatementHandle result = null;
+		StatementHandle result = null;
 		String cacheKey = null;
 
 		checkClosed();
@@ -1251,17 +1229,14 @@ public class ConnectionHandle implements Connection,Serializable{
 
 			if (this.statementCachingEnabled) {
 				cacheKey = this.preparedStatementCache.calculateCacheKey(sql, resultSetType, resultSetConcurrency, resultSetHoldability);
-				result = (PreparedStatementHandle) this.preparedStatementCache.get(cacheKey);
+				result = this.preparedStatementCache.get(cacheKey);
 			}
 
 			if (result == null){
-				result = new PreparedStatementHandle(this.connection.prepareStatement(sql, resultSetType, resultSetConcurrency, resultSetHoldability),
+				result = new PreparedStatementHandle(this.connection.prepareStatement(sql, resultSetType, resultSetConcurrency, resultSetHoldability), 
 						sql, this, cacheKey, this.preparedStatementCache);
-			} else {
-				result = new PreparedStatementHandle(result.getInternalPreparedStatement(),
-						result.sql, this, cacheKey, this.preparedStatementCache);
+				result.setLogicallyOpen();
 			}
-			result.setLogicallyOpen();
 
 			if (this.pool.closeConnectionWatch && this.statementCachingEnabled){ // debugging mode enabled?
 				result.setOpenStackTrace(this.pool.captureStackTrace(STATEMENT_NOT_CLOSED));
@@ -1278,7 +1253,7 @@ public class ConnectionHandle implements Connection,Serializable{
 			throw markPossiblyBroken(e);
 		}
 
-		return result;
+		return (PreparedStatement) result;
 	}
 
 	public void releaseSavepoint(Savepoint savepoint) throws SQLException {

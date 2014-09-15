@@ -17,6 +17,7 @@
 package com.jolbox.bonecp;
 
 import java.io.Closeable;
+import java.io.IOException;
 import java.io.Serializable;
 import java.lang.management.ManagementFactory;
 import java.lang.ref.Reference;
@@ -320,6 +321,7 @@ public class BoneCP implements Serializable, Closeable {
 	 * @return Connection handle
 	 * @throws SQLException on error
 	 */
+	@SuppressWarnings("resource")
 	protected Connection obtainRawInternalConnection()
 	throws SQLException {
 		Connection result = null;
@@ -393,67 +395,68 @@ public class BoneCP implements Serializable, Closeable {
 		}
 		this.config.sanitize();
 
-		this.statisticsEnabled = this.config.isStatisticsEnabled();
-		this.closeConnectionWatchTimeoutInMs = this.config.getCloseConnectionWatchTimeoutInMs();
-		this.poolAvailabilityThreshold = this.config.getPoolAvailabilityThreshold();
-		this.connectionTimeoutInMs = this.config.getConnectionTimeoutInMs();
+		this.statisticsEnabled = config.isStatisticsEnabled();
+		this.closeConnectionWatchTimeoutInMs = config.getCloseConnectionWatchTimeoutInMs();
+		this.poolAvailabilityThreshold = config.getPoolAvailabilityThreshold();
+		this.connectionTimeoutInMs = config.getConnectionTimeoutInMs();
 
 		if (this.connectionTimeoutInMs == 0){
 			this.connectionTimeoutInMs = Long.MAX_VALUE;
 		}
-		this.nullOnConnectionTimeout = this.config.isNullOnConnectionTimeout();
-		this.resetConnectionOnClose = this.config.isResetConnectionOnClose();
-		this.clientInfo = jvmMajorVersion > 5  ? this.config.getClientInfo() : null;
+		this.nullOnConnectionTimeout = config.isNullOnConnectionTimeout();
+		this.resetConnectionOnClose = config.isResetConnectionOnClose();
+		this.clientInfo = jvmMajorVersion > 5  ? config.getClientInfo() : null;
 		AcquireFailConfig acquireConfig = new AcquireFailConfig();
 		acquireConfig.setAcquireRetryAttempts(new AtomicInteger(0));
 		acquireConfig.setAcquireRetryDelayInMs(0);
 		acquireConfig.setLogMessage("Failed to obtain initial connection");
 
-		if (!this.config.isLazyInit()){
+		if (!config.isLazyInit()){
 			try{
 				Connection sanityConnection = obtainRawInternalConnection();
 				sanityConnection.close();
 			} catch (Exception e){
-				if (this.config.getConnectionHook() != null){
-					this.config.getConnectionHook().onAcquireFail(e, acquireConfig);
+				if (config.getConnectionHook() != null){
+					config.getConnectionHook().onAcquireFail(e, acquireConfig);
 				}
-				throw PoolUtil.generateSQLException(String.format(ERROR_TEST_CONNECTION, this.config.getJdbcUrl(), this.config.getUsername(), PoolUtil.stringifyException(e)), e);
+				throw PoolUtil.generateSQLException(String.format(ERROR_TEST_CONNECTION, config.getJdbcUrl(), config.getUsername(), PoolUtil.stringifyException(e)), e);
 
 			}
 		}
-		if (!this.config.isDisableConnectionTracking()){
+		if (!config.isDisableConnectionTracking()){
 			this.finalizableRefQueue = new FinalizableReferenceQueue();
 		}
 
 		this.asyncExecutor = MoreExecutors.listeningDecorator(Executors.newCachedThreadPool());
 
-		this.partitions = new ConnectionPartition[this.config.getPartitionCount()];
+		this.config = config;
+		this.partitions = new ConnectionPartition[config.getPartitionCount()];
 		String suffix = "";
 
-		if (this.config.getPoolName()!=null) {
-			suffix="-"+this.config.getPoolName();
+		if (config.getPoolName()!=null) {
+			suffix="-"+config.getPoolName();
 		}
 
 
-		this.keepAliveScheduler =  Executors.newScheduledThreadPool(this.config.getPartitionCount(), new CustomThreadFactory("BoneCP-keep-alive-scheduler"+suffix, true));
-		this.maxAliveScheduler =  Executors.newScheduledThreadPool(this.config.getPartitionCount(), new CustomThreadFactory("BoneCP-max-alive-scheduler"+suffix, true));
-		this.connectionsScheduler =  Executors.newFixedThreadPool(this.config.getPartitionCount(), new CustomThreadFactory("BoneCP-pool-watch-thread"+suffix, true));
+		this.keepAliveScheduler =  Executors.newScheduledThreadPool(config.getPartitionCount(), new CustomThreadFactory("BoneCP-keep-alive-scheduler"+suffix, true));
+		this.maxAliveScheduler =  Executors.newScheduledThreadPool(config.getPartitionCount(), new CustomThreadFactory("BoneCP-max-alive-scheduler"+suffix, true));
+		this.connectionsScheduler =  Executors.newFixedThreadPool(config.getPartitionCount(), new CustomThreadFactory("BoneCP-pool-watch-thread"+suffix, true));
 
-		this.partitionCount = this.config.getPartitionCount();
-		this.closeConnectionWatch = this.config.isCloseConnectionWatch();
-		this.cachedPoolStrategy = this.config.getPoolStrategy() != null && this.config.getPoolStrategy().equalsIgnoreCase("CACHED");
+		this.partitionCount = config.getPartitionCount();
+		this.closeConnectionWatch = config.isCloseConnectionWatch();
+		this.cachedPoolStrategy = config.getPoolStrategy() != null && config.getPoolStrategy().equalsIgnoreCase("CACHED");
 		if (this.cachedPoolStrategy){
 			this.connectionStrategy = new CachedConnectionStrategy(this, new DefaultConnectionStrategy(this));
 		} else {
 			this.connectionStrategy = new DefaultConnectionStrategy(this);
 		}
-		boolean queueLIFO = this.config.getServiceOrder() != null && this.config.getServiceOrder().equalsIgnoreCase("LIFO");
+		boolean queueLIFO = config.getServiceOrder() != null && config.getServiceOrder().equalsIgnoreCase("LIFO");
 		if (this.closeConnectionWatch){
 			logger.warn(THREAD_CLOSE_CONNECTION_WARNING);
 			this.closeConnectionExecutor =  Executors.newCachedThreadPool(new CustomThreadFactory("BoneCP-connection-watch-thread"+suffix, true));
 
 		}
-		for (int p=0; p < this.config.getPartitionCount(); p++){
+		for (int p=0; p < config.getPartitionCount(); p++){
 
 			ConnectionPartition connectionPartition = new ConnectionPartition(this);
 			this.partitions[p]=connectionPartition;
@@ -461,33 +464,33 @@ public class BoneCP implements Serializable, Closeable {
 
 			this.partitions[p].setFreeConnections(connectionHandles);
 
-			if (!this.config.isLazyInit()){
-				for (int i=0; i < this.config.getMinConnectionsPerPartition(); i++){
+			if (!config.isLazyInit()){
+				for (int i=0; i < config.getMinConnectionsPerPartition(); i++){
 					this.partitions[p].addFreeConnection(new ConnectionHandle(null, this.partitions[p], this, false));
 				}
 
 			}
 
 
-			if (this.config.getIdleConnectionTestPeriod(TimeUnit.SECONDS) > 0 || this.config.getIdleMaxAge(TimeUnit.SECONDS) > 0){
+			if (config.getIdleConnectionTestPeriod(TimeUnit.SECONDS) > 0 || config.getIdleMaxAge(TimeUnit.SECONDS) > 0){
 
-				final Runnable connectionTester = new ConnectionTesterThread(connectionPartition, this, this.config.getIdleMaxAge(TimeUnit.MILLISECONDS), this.config.getIdleConnectionTestPeriod(TimeUnit.MILLISECONDS), queueLIFO);
-				long delayInSeconds = this.config.getIdleConnectionTestPeriod(TimeUnit.SECONDS);
+				final Runnable connectionTester = new ConnectionTesterThread(connectionPartition, this.keepAliveScheduler, this, config.getIdleMaxAge(TimeUnit.MILLISECONDS), config.getIdleConnectionTestPeriod(TimeUnit.MILLISECONDS), queueLIFO);
+				long delayInSeconds = config.getIdleConnectionTestPeriod(TimeUnit.SECONDS);
 				if (delayInSeconds == 0L){
-					delayInSeconds = this.config.getIdleMaxAge(TimeUnit.SECONDS);
+					delayInSeconds = config.getIdleMaxAge(TimeUnit.SECONDS);
 				}
-				if (this.config.getIdleMaxAge(TimeUnit.SECONDS) < delayInSeconds
-						&& this.config.getIdleConnectionTestPeriod(TimeUnit.SECONDS) != 0
-						&& this.config.getIdleMaxAge(TimeUnit.SECONDS) != 0){
-					delayInSeconds = this.config.getIdleMaxAge(TimeUnit.SECONDS);
+				if (config.getIdleMaxAge(TimeUnit.SECONDS) < delayInSeconds
+						&& config.getIdleConnectionTestPeriod(TimeUnit.SECONDS) != 0 
+						&& config.getIdleMaxAge(TimeUnit.SECONDS) != 0){
+					delayInSeconds = config.getIdleMaxAge(TimeUnit.SECONDS);
 				}
-				this.keepAliveScheduler.scheduleAtFixedRate(connectionTester,delayInSeconds, delayInSeconds, TimeUnit.SECONDS);
+				this.keepAliveScheduler.schedule(connectionTester, delayInSeconds, TimeUnit.SECONDS);
 			}
 
 
-			if (this.config.getMaxConnectionAgeInSeconds() > 0){
-				final Runnable connectionMaxAgeTester = new ConnectionMaxAgeThread(connectionPartition, this, this.config.getMaxConnectionAge(TimeUnit.MILLISECONDS), queueLIFO);
-				this.maxAliveScheduler.scheduleAtFixedRate(connectionMaxAgeTester, this.config.getMaxConnectionAgeInSeconds(), this.config.getMaxConnectionAgeInSeconds(), TimeUnit.SECONDS);
+			if (config.getMaxConnectionAgeInSeconds() > 0){
+				final Runnable connectionMaxAgeTester = new ConnectionMaxAgeThread(connectionPartition, this.maxAliveScheduler, this, config.getMaxConnectionAge(TimeUnit.MILLISECONDS), queueLIFO);
+				this.maxAliveScheduler.schedule(connectionMaxAgeTester, config.getMaxConnectionAgeInSeconds(), TimeUnit.SECONDS);
 			}
 			// watch this partition for low no of threads
 			this.connectionsScheduler.execute(new PoolWatchThread(connectionPartition, this));
